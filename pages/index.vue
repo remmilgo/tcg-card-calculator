@@ -1,27 +1,31 @@
 <template>
   <div class="app">
     <h1>TCG Pack Calculator</h1>
+    <p class="intro">Figure out how many booster packs you need to collect a set — broken down by rarity, with a configurable probability threshold so you can plan realistically instead of hoping for the best.</p>
 
-    <!-- Total cards -->
+    <!-- Set Configuration -->
     <section class="card">
       <h2>Set Configuration</h2>
       <div class="row">
         <label>Total cards in set</label>
         <input v-model.number="totalCards" type="number" min="1" @change="onTotalChange" />
       </div>
-      <div class="row">
+      <p class="hint">The full card count for the set you're trying to complete — including all rarities. You can usually find this on the official product page or a fan wiki.</p>
+      <div class="row" style="margin-top:1rem">
         <label>Number of rarity levels</label>
         <input v-model.number="rarityCount" type="number" min="1" max="10" @change="onRarityCountChange" />
       </div>
+      <p class="hint">How many distinct rarity tiers the set has. Most TCGs have 3–5 (e.g. Common, Uncommon, Rare, Super Rare). Each tier gets its own line on the chart.</p>
     </section>
 
     <!-- Rarities -->
     <section class="card" v-if="rarities.length">
       <h2>Rarity Levels</h2>
+      <p class="hint" style="margin-bottom:1rem">Configure each rarity from rarest (top) to most common (bottom). Commons are auto-calculated as whatever cards are left after the other rarities are accounted for.</p>
       <div class="rarity-grid">
         <div class="rarity-header">Name</div>
-        <div class="rarity-header">Cards in set</div>
-        <div class="rarity-header">Cards per pack</div>
+        <div class="rarity-header" title="How many distinct cards exist at this rarity in the full set">Cards in set</div>
+        <div class="rarity-header" title="How many cards of this rarity you get in a single booster pack">Cards per pack</div>
         <div class="rarity-header">Color</div>
 
         <template v-for="(r, i) in rarities" :key="i">
@@ -30,18 +34,20 @@
             {{ commonCount }} <span class="auto-tag">auto</span>
           </div>
           <input v-else v-model.number="r.count" type="number" min="1" @change="clampRarities" />
-          <input v-model.number="r.perPack" type="number" min="0" />
+          <input v-model.number="r.perPack" type="number" min="0" step="any" />
           <input v-model="r.color" type="color" class="color-input" />
         </template>
       </div>
       <div v-if="commonCount < 1" class="warning">
         Rarity card counts exceed total cards — reduce them.
       </div>
+      <p class="hint" style="margin-top:1rem"><strong>Cards in set</strong> — how many different cards exist at that rarity. For example, if there are 10 different Super Rares in the set, enter 10.<br /><br /><strong>Cards per pack</strong> — how many cards of that rarity you get on average per pack. A typical pack might have 1 Rare slot, 3 Uncommon slots, and 6 Common slots — in that case enter whole numbers.<br /><br />Use decimals when a slot is shared between rarities. For example, if a pack has one "rare or better" slot and roughly 1 in 10 packs upgrades it to a Super Rare, enter <strong>0.1</strong> for Super Rare and <strong>0.9</strong> for Rare — they add up to the 1 slot. The same logic applies to foil or secret rare slots that only appear occasionally.</p>
     </section>
 
-    <!-- Pack info -->
+    <!-- Booster Pack Contents -->
     <section class="card" v-if="rarities.length">
-      <h2>Booster Pack</h2>
+      <h2>Booster Pack Contents</h2>
+      <p class="hint" style="margin-bottom:.75rem">This is how a single pack breaks down based on your settings above. Cross-check it against the back of the booster box or the official pack description.</p>
       <div class="pack-summary">
         <span v-for="(r, i) in rarities" :key="i" class="pack-chip" :style="{ background: r.color + '33', borderColor: r.color }">
           {{ r.perPack }}× {{ r.name || `Rarity ${i+1}` }}
@@ -52,18 +58,17 @@
 
     <!-- Certainty -->
     <section class="card" v-if="rarities.length">
-      <h2>Certainty</h2>
+      <h2>How sure do you want to be?</h2>
       <div class="row">
         <label>Confidence level: <strong>{{ certainty }}%</strong></label>
         <input v-model.number="certainty" type="range" min="50" max="99" step="1" class="slider" />
       </div>
-      <p class="muted small">
-        At {{ certainty }}% certainty: after X packs, you will have collected at least Y distinct cards with {{ certainty }}% probability.
-      </p>
-      <div class="row">
+      <p class="hint">This controls how conservative the graph is. At <strong>80%</strong> the graph shows a number of packs where 8 out of 10 players opening that many packs would reach that card count — 2 out of 10 get unlucky and fall short. At <strong>95%</strong> almost everyone makes it, but you'll need significantly more packs. At <strong>50%</strong> it's the average — half of players do better, half do worse.</p>
+      <div class="row" style="margin-top:1rem">
         <label>Max packs to show</label>
         <input v-model.number="maxPacks" type="number" min="10" max="2000" step="10" />
       </div>
+      <p class="hint">The X-axis range. If the curves haven't flattened by your max, increase this number.</p>
     </section>
 
     <button class="calc-btn" :disabled="!canCalc" @click="calculate">
@@ -75,10 +80,10 @@
     <!-- Chart -->
     <section class="card chart-card" v-if="chartData">
       <h2>Distinct cards collected per rarity at {{ certainty }}% certainty</h2>
-      <Line :data="chartData" :options="chartOptions" />
-      <p class="muted small">
-        X-axis = number of packs opened · Y-axis = distinct cards collected · dashed = full completion
-      </p>
+      <div class="chart-wrap">
+        <Line :data="chartData" :options="chartOptions" />
+      </div>
+      <p class="hint" style="margin-top:.75rem">Each solid line shows how many <em>different</em> cards of that rarity you'll have collected after opening X packs — at your chosen certainty level. The dashed line of the same color marks the full set count for that rarity: when the solid line meets the dashed line, you're done. Hover over the chart to read exact values.</p>
     </section>
   </div>
 </template>
@@ -112,11 +117,9 @@ const chartData = ref(null)
 
 const DEFAULT_COLORS = ['#e74c3c', '#f39c12', '#3498db', '#9b59b6', '#1abc9c', '#e67e22', '#2ecc71', '#e91e63', '#00bcd4', '#ff5722']
 
-// Name by position from top (0 = rarest). Last slot is always Common.
-// 0 → "Super Super…Rare", second-to-last non-common → "Rare"
 function defaultRarityName(i, total) {
   if (i === total - 1) return 'Common'
-  const superCount = total - 2 - i   // how many "Super" prefixes
+  const superCount = total - 2 - i
   if (superCount <= 0) return 'Rare'
   return Array(superCount).fill('Super').join(' ') + ' Rare'
 }
@@ -141,17 +144,12 @@ const canCalc = computed(() => {
 // ─── Initialization ───────────────────────────────────────────────────────────
 function buildRarities(count) {
   const existing = rarities.value || []
-  const prev = existing.filter(r => !r.isCommon) // non-common slots, top→bottom
-
-  // When count grows, new slots are prepended at the top.
-  // When count shrinks, slots are removed from the top.
-  // The Common slot is always the final entry.
+  const prev = existing.filter(r => !r.isCommon)
   const nonCommonCount = count - 1
   const result = []
 
   for (let i = 0; i < nonCommonCount; i++) {
-    // Map: existing non-common slots are kept from the bottom up
-    const offset = nonCommonCount - prev.length  // how many new slots prepended
+    const offset = nonCommonCount - prev.length
     const prevIdx = i - offset
     const p = prevIdx >= 0 ? prev[prevIdx] : null
     result.push({
@@ -163,7 +161,6 @@ function buildRarities(count) {
     })
   }
 
-  // Common always last
   const prevCommon = existing.find(r => r.isCommon)
   result.push({
     name: prevCommon?.name ?? 'Common',
@@ -185,17 +182,14 @@ function onTotalChange() {
 }
 
 function clampRarities() {
-  // ensure non-common cards don't exceed total
   const nonCommon = rarities.value.filter(r => !r.isCommon)
   let sum = nonCommon.reduce((s, r) => s + (r.count || 0), 0)
   if (sum >= totalCards.value) {
-    // scale down proportionally
     const factor = (totalCards.value - nonCommon.length) / sum
     nonCommon.forEach(r => { r.count = Math.max(1, Math.floor(r.count * factor)) })
   }
 }
 
-// init on mount
 rarities.value = buildRarities(rarityCount.value)
 
 watch(rarityCount, () => {
@@ -203,58 +197,36 @@ watch(rarityCount, () => {
 })
 
 // ─── Calculation ──────────────────────────────────────────────────────────────
-// For each rarity with pool size R and k cards drawn per pack:
-// After opening P packs we draw n = P*k cards (with replacement).
-// We want the p-th percentile of distinct cards collected.
-//
-// Exact percentile via the Poisson approximation:
-//   Each card i is unseen with probability q = ((R-1)/R)^n
-//   X_i ~ Bernoulli(1-q), but they're correlated.
-//
-// We use Monte Carlo simulation chunked into microtasks so the UI stays responsive.
-
-function simulate(R, k, packs, certaintyFraction, runs = 600) {
-  // Returns array of length packs+1 where result[p] = certainty-percentile distinct cards after p packs
+function simulate(R, k, packs, certaintyFraction) {
   const results = new Array(packs + 1)
   results[0] = 0
 
-  // For efficiency, run Monte Carlo for each pack count
-  // Use the analytical CDF via inclusion-exclusion for small R, else normal approx
   for (let p = 1; p <= packs; p++) {
-    const n = p * k  // total draws
+    const n = p * k
     if (n === 0) { results[p] = 0; continue }
     if (R === 0) { results[p] = 0; continue }
 
-    // Expected distinct: E = R*(1 - q^n) where q = (R-1)/R
-    // Variance approximation:
-    //   Var ≈ R*q^n*(1-q^n) + R*(R-1)*(((R-2)/R)^n - q^(2n))
-    // Use normal approximation with a continuity correction for the percentile
     const q = (R - 1) / R
     const qn = Math.pow(q, n)
     const E = R * (1 - qn)
 
-    // Clamp certainty below 1 to avoid Infinity
     const clampedCert = Math.min(certaintyFraction, 0.9999)
 
     if (certaintyFraction === 0.5) {
       results[p] = Math.round(E)
     } else {
-      // Variance of sum of correlated Bernoullis
       const q2n = qn * qn
       const r2n = R > 1 ? Math.pow((R - 2) / R, n) : 0
       const varD = R * qn * (1 - qn) + R * (R - 1) * (r2n - q2n)
       const sd = Math.sqrt(Math.max(varD, 0))
 
-      // Normal approximation: use standard normal quantile
       const z = normalQuantile(clampedCert)
-      // At high certainty, the curve bends – clamp to [0, R]
       results[p] = Math.max(0, Math.min(R, Math.round(E + z * sd)))
     }
   }
   return results
 }
 
-// Rational approximation for the standard normal quantile (Beasley-Springer-Moro)
 function normalQuantile(p) {
   if (p >= 1) return 8
   if (p <= 0) return -8
@@ -283,7 +255,6 @@ async function calculate() {
   chartData.value = null
   await nextTick()
 
-  // Small yield to let the UI update
   await new Promise(r => setTimeout(r, 10))
 
   const cert = certainty.value / 100
@@ -308,12 +279,11 @@ async function calculate() {
     }
   })
 
-  // Add dashed completion reference lines (horizontal at each R)
   rarities.value.forEach((r, i) => {
     const R = r.isCommon ? commonCount.value : r.count
     if (R <= 0) return
     datasets.push({
-      label: `${r.name || `Rarity ${i + 1}`} (full set: ${R})`,
+      label: `${r.name || `Rarity ${i + 1}`} (full: ${R})`,
       data: Array(P + 1).fill(R),
       borderColor: r.color,
       backgroundColor: 'transparent',
@@ -512,6 +482,23 @@ input[type="text"]:disabled {
   font-weight: 500;
 }
 
+.intro {
+  color: #999;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-top: 0.25rem;
+}
+
+.hint {
+  color: #666;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.hint strong {
+  color: #999;
+}
+
 .muted { color: #777; }
 .small { font-size: 0.85rem; margin-top: 0.5rem; }
 
@@ -546,8 +533,9 @@ input[type="text"]:disabled {
 
 .chart-card h2 { flex-shrink: 0; }
 
-.chart-card canvas {
+.chart-wrap {
   flex: 1;
+  position: relative;
   min-height: 0;
 }
 </style>
