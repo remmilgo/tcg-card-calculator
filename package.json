@@ -6,13 +6,11 @@
     "dev": "nuxt dev",
     "build": "nuxt build",
     "generate": "nuxt generate",
-    "dist": "nuxt generate && node inline.mjs",
     "preview": "nuxt preview"
   },
   "dependencies": {
     "chart.js": "^4.4.7",
     "nuxt": "^3.15.4",
-    "vite-plugin-singlefile": "^2.3.2",
     "vue": "^3.5.13",
     "vue-chartjs": "^5.3.2"
   }
