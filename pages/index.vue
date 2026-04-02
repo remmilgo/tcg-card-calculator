@@ -1,0 +1,553 @@
+<template>
+  <div class="app">
+    <h1>TCG Pack Calculator</h1>
+
+    <!-- Total cards -->
+    <section class="card">
+      <h2>Set Configuration</h2>
+      <div class="row">
+        <label>Total cards in set</label>
+        <input v-model.number="totalCards" type="number" min="1" @change="onTotalChange" />
+      </div>
+      <div class="row">
+        <label>Number of rarity levels</label>
+        <input v-model.number="rarityCount" type="number" min="1" max="10" @change="onRarityCountChange" />
+      </div>
+    </section>
+
+    <!-- Rarities -->
+    <section class="card" v-if="rarities.length">
+      <h2>Rarity Levels</h2>
+      <div class="rarity-grid">
+        <div class="rarity-header">Name</div>
+        <div class="rarity-header">Cards in set</div>
+        <div class="rarity-header">Cards per pack</div>
+        <div class="rarity-header">Color</div>
+
+        <template v-for="(r, i) in rarities" :key="i">
+          <input v-model="r.name" type="text" :placeholder="`Rarity ${i + 1}`" :disabled="r.isCommon" />
+          <div v-if="r.isCommon" class="auto-value">
+            {{ commonCount }} <span class="auto-tag">auto</span>
+          </div>
+          <input v-else v-model.number="r.count" type="number" min="1" @change="clampRarities" />
+          <input v-model.number="r.perPack" type="number" min="0" />
+          <input v-model="r.color" type="color" class="color-input" />
+        </template>
+      </div>
+      <div v-if="commonCount < 1" class="warning">
+        Rarity card counts exceed total cards — reduce them.
+      </div>
+    </section>
+
+    <!-- Pack info -->
+    <section class="card" v-if="rarities.length">
+      <h2>Booster Pack</h2>
+      <div class="pack-summary">
+        <span v-for="(r, i) in rarities" :key="i" class="pack-chip" :style="{ background: r.color + '33', borderColor: r.color }">
+          {{ r.perPack }}× {{ r.name || `Rarity ${i+1}` }}
+        </span>
+      </div>
+      <div class="row muted">Total cards per pack: {{ totalPerPack }}</div>
+    </section>
+
+    <!-- Certainty -->
+    <section class="card" v-if="rarities.length">
+      <h2>Certainty</h2>
+      <div class="row">
+        <label>Confidence level: <strong>{{ certainty }}%</strong></label>
+        <input v-model.number="certainty" type="range" min="50" max="99" step="1" class="slider" />
+      </div>
+      <p class="muted small">
+        At {{ certainty }}% certainty: after X packs, you will have collected at least Y distinct cards with {{ certainty }}% probability.
+      </p>
+      <div class="row">
+        <label>Max packs to show</label>
+        <input v-model.number="maxPacks" type="number" min="10" max="2000" step="10" />
+      </div>
+    </section>
+
+    <button class="calc-btn" :disabled="!canCalc" @click="calculate">
+      Calculate
+    </button>
+
+    <div v-if="computing" class="computing">Computing…</div>
+
+    <!-- Chart -->
+    <section class="card chart-card" v-if="chartData">
+      <h2>Distinct cards collected per rarity at {{ certainty }}% certainty</h2>
+      <Line :data="chartData" :options="chartOptions" />
+      <p class="muted small">
+        X-axis = number of packs opened · Y-axis = distinct cards collected · dashed = full completion
+      </p>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch, nextTick } from 'vue'
+
+// ─── Chart.js setup ──────────────────────────────────────────────────────────
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+} from 'chart.js'
+import { Line } from 'vue-chartjs'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler)
+
+// ─── State ───────────────────────────────────────────────────────────────────
+const totalCards = ref(100)
+const rarityCount = ref(3)
+const certainty = ref(80)
+const maxPacks = ref(200)
+const computing = ref(false)
+const chartData = ref(null)
+
+const DEFAULT_COLORS = ['#e74c3c', '#f39c12', '#3498db', '#9b59b6', '#1abc9c', '#e67e22', '#2ecc71', '#e91e63', '#00bcd4', '#ff5722']
+
+// Name by position from top (0 = rarest). Last slot is always Common.
+// 0 → "Super Super…Rare", second-to-last non-common → "Rare"
+function defaultRarityName(i, total) {
+  if (i === total - 1) return 'Common'
+  const superCount = total - 2 - i   // how many "Super" prefixes
+  if (superCount <= 0) return 'Rare'
+  return Array(superCount).fill('Super').join(' ') + ' Rare'
+}
+
+const rarities = ref([])
+
+// ─── Derived ─────────────────────────────────────────────────────────────────
+const commonCount = computed(() => {
+  const nonCommon = rarities.value.filter(r => !r.isCommon).reduce((s, r) => s + (r.count || 0), 0)
+  return totalCards.value - nonCommon
+})
+
+const totalPerPack = computed(() => rarities.value.reduce((s, r) => s + (r.perPack || 0), 0))
+
+const canCalc = computed(() => {
+  if (!rarities.value.length) return false
+  if (commonCount.value < 1) return false
+  if (totalPerPack.value < 1) return false
+  return true
+})
+
+// ─── Initialization ───────────────────────────────────────────────────────────
+function buildRarities(count) {
+  const existing = rarities.value || []
+  const prev = existing.filter(r => !r.isCommon) // non-common slots, top→bottom
+
+  // When count grows, new slots are prepended at the top.
+  // When count shrinks, slots are removed from the top.
+  // The Common slot is always the final entry.
+  const nonCommonCount = count - 1
+  const result = []
+
+  for (let i = 0; i < nonCommonCount; i++) {
+    // Map: existing non-common slots are kept from the bottom up
+    const offset = nonCommonCount - prev.length  // how many new slots prepended
+    const prevIdx = i - offset
+    const p = prevIdx >= 0 ? prev[prevIdx] : null
+    result.push({
+      name: p?.name ?? defaultRarityName(i, count),
+      count: p?.count ?? Math.floor(totalCards.value / (count * 2)),
+      perPack: p?.perPack ?? (i === 0 ? 1 : i < nonCommonCount / 2 ? 2 : 4),
+      color: p?.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+      isCommon: false,
+    })
+  }
+
+  // Common always last
+  const prevCommon = existing.find(r => r.isCommon)
+  result.push({
+    name: prevCommon?.name ?? 'Common',
+    count: 0,
+    perPack: prevCommon?.perPack ?? 6,
+    color: prevCommon?.color ?? DEFAULT_COLORS[(nonCommonCount) % DEFAULT_COLORS.length],
+    isCommon: true,
+  })
+
+  return result
+}
+
+function onRarityCountChange() {
+  rarities.value = buildRarities(rarityCount.value)
+}
+
+function onTotalChange() {
+  clampRarities()
+}
+
+function clampRarities() {
+  // ensure non-common cards don't exceed total
+  const nonCommon = rarities.value.filter(r => !r.isCommon)
+  let sum = nonCommon.reduce((s, r) => s + (r.count || 0), 0)
+  if (sum >= totalCards.value) {
+    // scale down proportionally
+    const factor = (totalCards.value - nonCommon.length) / sum
+    nonCommon.forEach(r => { r.count = Math.max(1, Math.floor(r.count * factor)) })
+  }
+}
+
+// init on mount
+rarities.value = buildRarities(rarityCount.value)
+
+watch(rarityCount, () => {
+  rarities.value = buildRarities(rarityCount.value)
+})
+
+// ─── Calculation ──────────────────────────────────────────────────────────────
+// For each rarity with pool size R and k cards drawn per pack:
+// After opening P packs we draw n = P*k cards (with replacement).
+// We want the p-th percentile of distinct cards collected.
+//
+// Exact percentile via the Poisson approximation:
+//   Each card i is unseen with probability q = ((R-1)/R)^n
+//   X_i ~ Bernoulli(1-q), but they're correlated.
+//
+// We use Monte Carlo simulation chunked into microtasks so the UI stays responsive.
+
+function simulate(R, k, packs, certaintyFraction, runs = 600) {
+  // Returns array of length packs+1 where result[p] = certainty-percentile distinct cards after p packs
+  const results = new Array(packs + 1)
+  results[0] = 0
+
+  // For efficiency, run Monte Carlo for each pack count
+  // Use the analytical CDF via inclusion-exclusion for small R, else normal approx
+  for (let p = 1; p <= packs; p++) {
+    const n = p * k  // total draws
+    if (n === 0) { results[p] = 0; continue }
+    if (R === 0) { results[p] = 0; continue }
+
+    // Expected distinct: E = R*(1 - q^n) where q = (R-1)/R
+    // Variance approximation:
+    //   Var ≈ R*q^n*(1-q^n) + R*(R-1)*(((R-2)/R)^n - q^(2n))
+    // Use normal approximation with a continuity correction for the percentile
+    const q = (R - 1) / R
+    const qn = Math.pow(q, n)
+    const E = R * (1 - qn)
+
+    // Clamp certainty below 1 to avoid Infinity
+    const clampedCert = Math.min(certaintyFraction, 0.9999)
+
+    if (certaintyFraction === 0.5) {
+      results[p] = Math.round(E)
+    } else {
+      // Variance of sum of correlated Bernoullis
+      const q2n = qn * qn
+      const r2n = R > 1 ? Math.pow((R - 2) / R, n) : 0
+      const varD = R * qn * (1 - qn) + R * (R - 1) * (r2n - q2n)
+      const sd = Math.sqrt(Math.max(varD, 0))
+
+      // Normal approximation: use standard normal quantile
+      const z = normalQuantile(clampedCert)
+      // At high certainty, the curve bends – clamp to [0, R]
+      results[p] = Math.max(0, Math.min(R, Math.round(E + z * sd)))
+    }
+  }
+  return results
+}
+
+// Rational approximation for the standard normal quantile (Beasley-Springer-Moro)
+function normalQuantile(p) {
+  if (p >= 1) return 8
+  if (p <= 0) return -8
+  const a = [2.50662823884, -18.61500062529, 41.39119773534, -25.44106049637]
+  const b = [-8.47351093090, 23.08336743743, -21.06224101826, 3.13082909833]
+  const c = [0.3374754822726147, 0.9761690190917186, 0.1607979714918209,
+             0.0276438810333863, 0.0038405729373609, 0.0003951896511349,
+             0.0000321767881768, 0.0000002888167364, 0.0000003960315187]
+  let r, x
+  const y = p - 0.5
+  if (Math.abs(y) < 0.42) {
+    r = y * y
+    x = y * (((a[3]*r+a[2])*r+a[1])*r+a[0]) / ((((b[3]*r+b[2])*r+b[1])*r+b[0])*r+1)
+  } else {
+    r = p < 0.5 ? p : 1 - p
+    r = Math.log(-Math.log(r))
+    x = c[0]+r*(c[1]+r*(c[2]+r*(c[3]+r*(c[4]+r*(c[5]+r*(c[6]+r*(c[7]+r*c[8])))))))
+    if (y < 0) x = -x
+  }
+  return x
+}
+
+async function calculate() {
+  if (!canCalc.value) return
+  computing.value = true
+  chartData.value = null
+  await nextTick()
+
+  // Small yield to let the UI update
+  await new Promise(r => setTimeout(r, 10))
+
+  const cert = certainty.value / 100
+  const P = maxPacks.value
+  const labels = Array.from({ length: P + 1 }, (_, i) => i)
+
+  const datasets = rarities.value.map((r, i) => {
+    const R = r.isCommon ? commonCount.value : r.count
+    const k = r.perPack || 0
+    const name = r.name || `Rarity ${i + 1}`
+    const data = simulate(R, k, P, cert)
+
+    return {
+      label: name,
+      data,
+      borderColor: r.color,
+      backgroundColor: r.color + '20',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
+      fill: false,
+    }
+  })
+
+  // Add dashed completion reference lines (horizontal at each R)
+  rarities.value.forEach((r, i) => {
+    const R = r.isCommon ? commonCount.value : r.count
+    if (R <= 0) return
+    datasets.push({
+      label: `${r.name || `Rarity ${i + 1}`} (full set: ${R})`,
+      data: Array(P + 1).fill(R),
+      borderColor: r.color,
+      backgroundColor: 'transparent',
+      borderWidth: 1,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      fill: false,
+    })
+  })
+
+  chartData.value = { labels, datasets }
+  computing.value = false
+}
+
+// ─── Chart options ────────────────────────────────────────────────────────────
+const chartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: {
+      labels: { color: '#ccc', font: { size: 12 } },
+    },
+    tooltip: {
+      callbacks: {
+        title: (items) => `${items[0].label} packs`,
+        label: (item) => ` ${item.dataset.label}: ${item.parsed.y} cards`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#aaa', maxTicksLimit: 20 },
+      grid: { color: '#333' },
+      title: { display: true, text: 'Packs opened', color: '#aaa' },
+    },
+    y: {
+      ticks: { color: '#aaa' },
+      grid: { color: '#333' },
+      title: { display: true, text: 'Distinct cards collected', color: '#aaa' },
+    },
+  },
+}))
+</script>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0f0f13;
+  color: #e0e0e0;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.5px;
+}
+
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 1rem;
+}
+
+.card {
+  background: #1a1a22;
+  border: 1px solid #2a2a35;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.row label {
+  min-width: 200px;
+  color: #ccc;
+}
+
+input[type="number"],
+input[type="text"] {
+  background: #0f0f13;
+  border: 1px solid #333;
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+  width: 120px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus {
+  border-color: #5b8dee;
+}
+
+input[type="number"]:disabled,
+input[type="text"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slider {
+  flex: 1;
+  accent-color: #5b8dee;
+  height: 4px;
+  cursor: pointer;
+}
+
+.color-input {
+  width: 48px !important;
+  height: 36px;
+  padding: 2px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+/* Rarity grid */
+.rarity-grid {
+  display: grid;
+  grid-template-columns: 160px 140px 140px 60px;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.rarity-header {
+  font-size: 0.8rem;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #2a2a35;
+}
+
+.rarity-grid input[type="text"] { width: 100%; }
+.rarity-grid input[type="number"] { width: 100%; }
+
+.auto-value {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  color: #5b8dee;
+}
+
+.auto-tag {
+  font-size: 0.7rem;
+  background: #5b8dee22;
+  color: #5b8dee;
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-transform: uppercase;
+}
+
+.warning {
+  margin-top: 0.75rem;
+  color: #e74c3c;
+  font-size: 0.9rem;
+}
+
+/* Pack summary */
+.pack-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.pack-chip {
+  border: 1px solid;
+  border-radius: 20px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.muted { color: #777; }
+.small { font-size: 0.85rem; margin-top: 0.5rem; }
+
+/* Calc button */
+.calc-btn {
+  align-self: flex-start;
+  background: #5b8dee;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.7rem 2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.calc-btn:hover:not(:disabled) { background: #4a7de0; }
+.calc-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.computing {
+  color: #aaa;
+  font-style: italic;
+}
+
+/* Chart */
+.chart-card {
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-card h2 { flex-shrink: 0; }
+
+.chart-card canvas {
+  flex: 1;
+  min-height: 0;
+}
+</style>
