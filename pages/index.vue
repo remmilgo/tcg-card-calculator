@@ -343,7 +343,7 @@ function simulate(R, k, packs, certaintyFraction) {
       const sd = Math.sqrt(Math.max(varD, 0))
 
       const z = normalQuantile(clampedCert)
-      results[p] = Math.max(0, Math.min(R, Math.round(E + z * sd)))
+      results[p] = Math.max(0, Math.min(R, Math.round(E - z * sd)))
     }
   }
   return results
