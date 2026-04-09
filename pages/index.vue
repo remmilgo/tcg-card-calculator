@@ -1,7 +1,7 @@
 <template>
   <div class="app">
-    <h1>TCG Pack Calculator</h1>
-    <p class="intro">Figure out how many booster packs you need to collect a set — broken down by rarity, with a configurable probability threshold so you can plan realistically instead of hoping for the best.</p>
+    <h1>Cyberpunk TCG Pack Calculator</h1>
+    <p class="intro">Pre-loaded with the <strong>Welcome to Night City</strong> set (171 cards, 6 rarities). Adjust any value if you want to model a different configuration. The chart shows how many distinct cards of each rarity you're likely to have collected after opening X packs, at your chosen confidence level.</p>
 
     <!-- Set Configuration -->
     <section class="card">
@@ -10,12 +10,12 @@
         <label>Total cards in set</label>
         <input v-model.number="totalCards" type="number" min="1" @change="onTotalChange" />
       </div>
-      <p class="hint">The full card count for the set you're trying to complete — including all rarities. You can usually find this on the official product page or a fan wiki.</p>
+      <p class="hint">Welcome to Night City: 171 total (60 Commons, 32 Uncommons, 32 Rares, 12 Epic Rares, 4 Secret Rares, 31 Iconic Rares).</p>
       <div class="row" style="margin-top:1rem">
         <label>Number of rarity levels</label>
         <input v-model.number="rarityCount" type="number" min="1" max="10" @change="onRarityCountChange" />
       </div>
-      <p class="hint">How many distinct rarity tiers the set has. Most TCGs have 3–5 (e.g. Common, Uncommon, Rare, Super Rare). Each tier gets its own line on the chart.</p>
+      <p class="hint">Each tier gets its own line on the chart. Changing this resets the rarity table to generic defaults.</p>
     </section>
 
     <!-- Rarities -->
@@ -41,13 +41,13 @@
       <div v-if="commonCount < 1" class="warning">
         Rarity card counts exceed total cards — reduce them.
       </div>
-      <p class="hint" style="margin-top:1rem"><strong>Cards in set</strong> — how many different cards exist at that rarity. For example, if there are 10 different Super Rares in the set, enter 10.<br /><br /><strong>Cards per pack</strong> — how many cards of that rarity you get on average per pack. A typical pack might have 1 Rare slot, 3 Uncommon slots, and 6 Common slots — in that case enter whole numbers.<br /><br />Use decimals when a slot is shared between rarities. For example, if a pack has one "rare or better" slot and roughly 1 in 10 packs upgrades it to a Super Rare, enter <strong>0.1</strong> for Super Rare and <strong>0.9</strong> for Rare — they add up to the 1 slot. The same logic applies to foil or secret rare slots that only appear occasionally.</p>
+      <p class="hint" style="margin-top:1rem"><strong>Cards in set</strong> — how many different cards exist at that rarity.<br /><br /><strong>Cards per pack</strong> — average cards of that rarity per pack. Use decimals for shared slots. In Welcome to Night City each pack has 2 Rare+ slots split across Rare, Epic Rare (1-in-4 packs), Secret Rare (1-in-24), and Iconic Rare (1-in-18) — their per-pack values sum to 2. Commons (7/pack) and Uncommons (3/pack) are guaranteed slots.</p>
     </section>
 
     <!-- Booster Pack Contents -->
     <section class="card" v-if="rarities.length">
       <h2>Booster Pack Contents</h2>
-      <p class="hint" style="margin-bottom:.75rem">This is how a single pack breaks down based on your settings above. Cross-check it against the back of the booster box or the official pack description.</p>
+      <p class="hint" style="margin-bottom:.75rem">This is how a single pack breaks down based on your settings above. A Beta (Kickstarter) display box contains 36 packs; a Retail display box contains 24 packs.</p>
       <div class="pack-summary">
         <span v-for="(r, i) in rarities" :key="i" class="pack-chip" :style="{ background: r.color + '33', borderColor: r.color }">
           {{ r.perPack }}× {{ r.name || `Rarity ${i+1}` }}
@@ -78,12 +78,63 @@
     <div v-if="computing" class="computing">Computing…</div>
 
     <!-- Chart -->
-    <section class="card chart-card" v-if="chartData">
+    <section class="card chart-card" v-if="simResults">
       <h2>Distinct cards collected per rarity at {{ certainty }}% certainty</h2>
-      <div class="chart-wrap">
-        <Line :data="chartData" :options="chartOptions" />
+
+      <div class="rarity-toggles">
+        <button
+          v-for="(r, i) in rarities"
+          :key="i"
+          class="rarity-toggle"
+          :style="{
+            borderColor: r.color,
+            color: r.visible ? '#111' : r.color,
+            background: r.visible ? r.color : 'transparent',
+            opacity: r.visible ? 1 : 0.45,
+          }"
+          @click="r.visible = !r.visible"
+        >{{ r.name || `Rarity ${i + 1}` }}</button>
       </div>
-      <p class="hint" style="margin-top:.75rem">Each solid line shows how many <em>different</em> cards of that rarity you'll have collected after opening X packs — at your chosen certainty level. The dashed line of the same color marks the full set count for that rarity: when the solid line meets the dashed line, you're done. Hover over the chart to read exact values.</p>
+
+      <div class="chart-wrap">
+        <Line v-if="chartData" :data="chartData" :options="chartOptions" />
+        <p v-else class="hint chart-empty">All rarities hidden — toggle some above.</p>
+      </div>
+
+      <p class="hint" style="margin-top:.75rem">Solid line = distinct cards collected at {{ certainty }}% certainty. Dashed line = full set target for that rarity. Hover for exact values.</p>
+    </section>
+
+    <!-- Metrics table -->
+    <section class="card" v-if="tableData.length">
+      <h2>Completion milestones at {{ certainty }}% certainty</h2>
+      <div class="table-wrap">
+        <table class="metrics-table">
+          <thead>
+            <tr>
+              <th>Rarity</th>
+              <th>Cards</th>
+              <th>Packs to 25%</th>
+              <th>Packs to 50%</th>
+              <th>Packs to 75%</th>
+              <th>Packs to complete</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in tableData" :key="row.name">
+              <td>
+                <span class="rarity-dot" :style="{ background: row.color }"></span>
+                {{ row.name }}
+              </td>
+              <td>{{ row.total }}</td>
+              <td>{{ row.packs25  ?? `> ${maxPacks}` }}</td>
+              <td>{{ row.packs50  ?? `> ${maxPacks}` }}</td>
+              <td>{{ row.packs75  ?? `> ${maxPacks}` }}</td>
+              <td class="col-complete">{{ row.packs100 ?? `> ${maxPacks}` }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="hint" style="margin-top:.75rem">Each value is the pack count where the curve crosses that completion threshold at your chosen certainty level. <strong>Packs to complete</strong> is the headline number — the point where you'd expect to have every distinct card at that rarity.</p>
     </section>
   </div>
 </template>
@@ -108,12 +159,12 @@ import { Line } from 'vue-chartjs'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler)
 
 // ─── State ───────────────────────────────────────────────────────────────────
-const totalCards = ref(100)
-const rarityCount = ref(3)
+const totalCards = ref(171)
+const rarityCount = ref(6)
 const certainty = ref(80)
-const maxPacks = ref(200)
+const maxPacks = ref(500)
 const computing = ref(false)
-const chartData = ref(null)
+const simResults = ref(null) // populated by calculate(); null means no results yet
 
 const DEFAULT_COLORS = ['#e74c3c', '#f39c12', '#3498db', '#9b59b6', '#1abc9c', '#e67e22', '#2ecc71', '#e91e63', '#00bcd4', '#ff5722']
 
@@ -141,6 +192,66 @@ const canCalc = computed(() => {
   return true
 })
 
+// Returns the first pack index where data[p] >= target, or null if never reached.
+function packsToTarget(data, target) {
+  for (let p = 0; p < data.length; p++) {
+    if (data[p] >= target) return p
+  }
+  return null
+}
+
+// Rebuilt automatically whenever simResults or any rarity's visible flag changes.
+const chartData = computed(() => {
+  if (!simResults.value) return null
+  const { P, results } = simResults.value
+  const labels = Array.from({ length: P + 1 }, (_, i) => i)
+  const datasets = []
+
+  results.forEach(({ rarity, R, data }, i) => {
+    if (!rarity.visible) return
+    const name = rarity.name || `Rarity ${i + 1}`
+    datasets.push({
+      label: name,
+      data,
+      borderColor: rarity.color,
+      backgroundColor: rarity.color + '20',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
+      fill: false,
+    })
+    if (R > 0) {
+      datasets.push({
+        label: `${name} (full: ${R})`,
+        data: Array(P + 1).fill(R),
+        borderColor: rarity.color,
+        backgroundColor: 'transparent',
+        borderWidth: 1,
+        borderDash: [6, 4],
+        pointRadius: 0,
+        fill: false,
+      })
+    }
+  })
+
+  return datasets.length ? { labels, datasets } : null
+})
+
+const tableData = computed(() => {
+  if (!simResults.value) return []
+  return simResults.value.results
+    .filter(({ rarity }) => rarity.visible)
+    .map(({ rarity, R, data }) => ({
+      name: rarity.name,
+      color: rarity.color,
+      total: R,
+      packs25:  packsToTarget(data, Math.ceil(R * 0.25)),
+      packs50:  packsToTarget(data, Math.ceil(R * 0.50)),
+      packs75:  packsToTarget(data, Math.ceil(R * 0.75)),
+      packs100: packsToTarget(data, R),
+    }))
+})
+
 // ─── Initialization ───────────────────────────────────────────────────────────
 function buildRarities(count) {
   const existing = rarities.value || []
@@ -158,6 +269,7 @@ function buildRarities(count) {
       perPack: p?.perPack ?? (i === 0 ? 1 : i < nonCommonCount / 2 ? 2 : 4),
       color: p?.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
       isCommon: false,
+      visible: true,
     })
   }
 
@@ -168,6 +280,7 @@ function buildRarities(count) {
     perPack: prevCommon?.perPack ?? 6,
     color: prevCommon?.color ?? DEFAULT_COLORS[(nonCommonCount) % DEFAULT_COLORS.length],
     isCommon: true,
+    visible: true,
   })
 
   return result
@@ -190,7 +303,16 @@ function clampRarities() {
   }
 }
 
-rarities.value = buildRarities(rarityCount.value)
+// Welcome to Night City defaults.
+// The 2 Rare+ slots per pack are shared: Epic(1/4) + Secret(1/24) + Iconic(1/18) + Rare(remainder).
+rarities.value = [
+  { name: 'Secret Rare', count: 4,  perPack: 0.042, color: '#f1c40f', isCommon: false, visible: true },
+  { name: 'Iconic Rare', count: 31, perPack: 0.056, color: '#e67e22', isCommon: false, visible: true },
+  { name: 'Epic Rare',   count: 12, perPack: 0.25,  color: '#9b59b6', isCommon: false, visible: true },
+  { name: 'Rare',        count: 32, perPack: 1.652, color: '#3498db', isCommon: false, visible: true },
+  { name: 'Uncommon',    count: 32, perPack: 3,     color: '#2ecc71', isCommon: false, visible: true },
+  { name: 'Common',      count: 0,  perPack: 7,     color: '#95a5a6', isCommon: true,  visible: true },
+]
 
 watch(rarityCount, () => {
   rarities.value = buildRarities(rarityCount.value)
@@ -252,49 +374,20 @@ function normalQuantile(p) {
 async function calculate() {
   if (!canCalc.value) return
   computing.value = true
-  chartData.value = null
+  simResults.value = null
   await nextTick()
-
   await new Promise(r => setTimeout(r, 10))
 
   const cert = certainty.value / 100
   const P = maxPacks.value
-  const labels = Array.from({ length: P + 1 }, (_, i) => i)
 
-  const datasets = rarities.value.map((r, i) => {
+  const results = rarities.value.map((r) => {
     const R = r.isCommon ? commonCount.value : r.count
-    const k = r.perPack || 0
-    const name = r.name || `Rarity ${i + 1}`
-    const data = simulate(R, k, P, cert)
-
-    return {
-      label: name,
-      data,
-      borderColor: r.color,
-      backgroundColor: r.color + '20',
-      borderWidth: 2,
-      pointRadius: 0,
-      tension: 0.3,
-      fill: false,
-    }
+    const data = simulate(R, r.perPack || 0, P, cert)
+    return { rarity: r, R, data }
   })
 
-  rarities.value.forEach((r, i) => {
-    const R = r.isCommon ? commonCount.value : r.count
-    if (R <= 0) return
-    datasets.push({
-      label: `${r.name || `Rarity ${i + 1}`} (full: ${R})`,
-      data: Array(P + 1).fill(R),
-      borderColor: r.color,
-      backgroundColor: 'transparent',
-      borderWidth: 1,
-      borderDash: [6, 4],
-      pointRadius: 0,
-      fill: false,
-    })
-  })
-
-  chartData.value = { labels, datasets }
+  simResults.value = { P, results }
   computing.value = false
 }
 
@@ -524,18 +617,88 @@ input[type="text"]:disabled {
   font-style: italic;
 }
 
+/* Rarity visibility toggles */
+.rarity-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.rarity-toggle {
+  border: 1px solid;
+  border-radius: 20px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, opacity 0.12s, color 0.12s;
+  letter-spacing: 0.02em;
+}
+
 /* Chart */
 .chart-card {
-  height: 480px;
   display: flex;
   flex-direction: column;
 }
 
-.chart-card h2 { flex-shrink: 0; }
-
 .chart-wrap {
-  flex: 1;
   position: relative;
-  min-height: 0;
+  height: 400px;
+}
+
+.chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #555;
+}
+
+/* Metrics table */
+.table-wrap {
+  overflow-x: auto;
+}
+
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.metrics-table th {
+  text-align: left;
+  color: #777;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.4rem 0.75rem 0.5rem;
+  border-bottom: 1px solid #2a2a35;
+  white-space: nowrap;
+}
+
+.metrics-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #1e1e28;
+  color: #ccc;
+}
+
+.metrics-table tbody tr:last-child td { border-bottom: none; }
+
+.metrics-table tbody tr:hover td { background: #1e1e28; }
+
+.col-complete {
+  font-weight: 600;
+  color: #fff !important;
+}
+
+.rarity-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+  flex-shrink: 0;
 }
 </style>
